@@ -55,7 +55,8 @@ type ActionPlanData = {
     }>;
 };
 
-const PRIMARY_MODEL: ModelName = Deno.env.get('OPENAI_MODEL_PRIMARY') || 'gpt-5-nano';
+const PRIMARY_MODEL: ModelName = (Deno.env.get('OPENAI_MODEL_PRIMARY') as ModelName) || 'gpt-5-mini';
+const FALLBACK_MODEL: ModelName = (Deno.env.get('OPENAI_MODEL_FALLBACK') as ModelName) || 'gpt-4o-mini';
 const OPENAI_EMBED_MODEL = Deno.env.get('OPENAI_EMBED_MODEL') || 'text-embedding-3-small';
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
@@ -99,6 +100,8 @@ type OpenAiFailure = {
 };
 
 type OpenAiResult = OpenAiSuccess | OpenAiFailure;
+
+const isOpenAiFailure = (result: OpenAiResult): result is OpenAiFailure => result.ok === false;
 
 const buildActionPlan = (goal: string): ActionPlanData => ({
     goal,
@@ -257,7 +260,10 @@ const upsertChunk = async (params: {
     if (!res.ok) {
         const body = await safeJson(res);
         const message = body?.message || body?.error?.message || `upsert_rag_chunk failed: ${res.status}`;
-        throw new Error(message);
+        const err = new Error(message) as Error & { supabaseError?: unknown; hint?: string };
+        err.supabaseError = body;
+        err.hint = 'rag_chunks RLS/권한, vector 타입/차원, upsert_rag_chunk 함수 시그니처를 확인하세요.';
+        throw err;
     }
 };
 
@@ -296,13 +302,23 @@ const upsertDocument = async (params: {
     if (!res.ok) {
         const body = await safeJson(res);
         const message = body?.message || body?.error?.message || `upsert_rag_document failed: ${res.status}`;
-        throw new Error(message);
+        const err = new Error(message) as Error & { supabaseError?: unknown; hint?: string };
+        err.supabaseError = body;
+        err.hint = 'upsert_rag_document 함수 존재/시그니처 및 service role 권한을 확인하세요.';
+        throw err;
     }
 };
 
 const writeIngestStageLog = async (params: {
     documentId: string;
-    stage: 'persist_chunks_start' | 'persist_chunks_failed' | 'persist_chunks_success';
+    stage:
+    | 'received'
+    | 'doc_upserted'
+    | 'openai_request_start'
+    | 'openai_request_done'
+    | 'chunks_persist_start'
+    | 'chunks_persist_done'
+    | 'failed';
     status: 'started' | 'failed' | 'success';
     message?: string;
     payload?: Record<string, unknown>;
@@ -337,6 +353,11 @@ const writeIngestStageLog = async (params: {
     } catch {
         // stage 로그 실패는 주 흐름을 막지 않음
     }
+};
+
+const trimStack = (stack?: string): string | null => {
+    if (!stack) return null;
+    return stack.slice(0, 2048);
 };
 
 const persistRagChunks = async (params: {
@@ -482,6 +503,32 @@ const callOpenAI = async (
 
 Deno.serve(async (req) => {
     const startedAt = Date.now();
+    let lastStageAt = startedAt;
+    let stage:
+        | 'received'
+        | 'doc_upserted'
+        | 'openai_request_start'
+        | 'openai_request_done'
+        | 'chunks_persist_start'
+        | 'chunks_persist_done'
+        | 'failed'
+        | 'init' = 'init';
+
+    const logStageTiming = (requestId: string, currentStage: string, payload?: Record<string, unknown>) => {
+        const now = Date.now();
+        const elapsedMs = now - startedAt;
+        const stageMs = now - lastStageAt;
+        lastStageAt = now;
+        console.log(JSON.stringify({
+            event: 'analyze_stage',
+            requestId,
+            stage: currentStage,
+            elapsedMs,
+            stageMs,
+            payload: payload || {}
+        }));
+    };
+
     if (req.method === 'OPTIONS') {
         return new Response('ok', { headers: corsHeaders });
     }
@@ -491,9 +538,29 @@ Deno.serve(async (req) => {
     }
 
     const requestId = crypto.randomUUID();
+    const mode = new URL(req.url).searchParams.get('mode') || '';
 
     try {
-        const payload = await req.json();
+        let payload: Record<string, unknown> = {};
+        try {
+            payload = await req.json();
+        } catch {
+            payload = {};
+        }
+
+        stage = 'received';
+        logStageTiming(requestId, stage, { mode });
+
+        if (mode === 'ping') {
+            return jsonResponse(200, {
+                ok: true,
+                requestId,
+                stage,
+                mode,
+                latencyMs: Date.now() - startedAt
+            });
+        }
+
         const input = String(payload?.input || '').trim();
         const sourceType = (payload?.sourceType || 'manual') as SourceType;
         const documentId = String(payload?.documentId || `d-${Date.now()}`);
@@ -501,8 +568,80 @@ Deno.serve(async (req) => {
         const ownerUserId = parseJwtUserId(req) || (UUID_RE.test(String(payload?.userId || '')) ? String(payload?.userId) : DEFAULT_OWNER_ID);
         const contextDocs = Array.isArray(payload?.contextDocs) ? (payload.contextDocs as ContextDoc[]) : [];
 
-        if (!input) {
+        if (!input && mode !== 'db' && mode !== 'openai') {
             return jsonResponse(400, { error: { code: 'BAD_REQUEST', message: 'input is required', requestId } });
+        }
+
+        if (mode === 'db') {
+            await upsertDocument({
+                id: documentId,
+                ownerUserId,
+                workspaceId,
+                sourceType,
+                title: 'mode=db healthcheck',
+                rawText: input || 'mode=db',
+                summaryText: 'db only check',
+                metadata: {
+                    ingestStatus: 'completed',
+                    requestId,
+                    mode
+                }
+            });
+            stage = 'doc_upserted';
+            logStageTiming(requestId, stage, { mode, documentId });
+            return jsonResponse(200, {
+                ok: true,
+                requestId,
+                mode,
+                stage,
+                documentId,
+                latencyMs: Date.now() - startedAt
+            });
+        }
+
+        if (mode === 'openai') {
+            stage = 'openai_request_start';
+            logStageTiming(requestId, stage, { mode, model: PRIMARY_MODEL });
+            const openaiOnly = await callOpenAI(PRIMARY_MODEL, input || 'mode=openai', sourceType, documentId, contextDocs);
+            stage = 'openai_request_done';
+            if (openaiOnly.ok) {
+                logStageTiming(requestId, stage, {
+                    mode,
+                    model: PRIMARY_MODEL,
+                    ok: true,
+                    status: 200
+                });
+                return jsonResponse(200, {
+                    ok: true,
+                    requestId,
+                    mode,
+                    stage,
+                    modelUsed: PRIMARY_MODEL,
+                    openaiStatus: 200,
+                    sample: {
+                        title: openaiOnly.content.title,
+                        topicTags: openaiOnly.content.topicTags,
+                        summaryText: openaiOnly.content.summaryText?.slice(0, 180)
+                    }
+                });
+            }
+
+            const openaiOnlyFailure = openaiOnly as OpenAiFailure;
+            logStageTiming(requestId, stage, {
+                mode,
+                model: PRIMARY_MODEL,
+                ok: false,
+                status: openaiOnlyFailure.status
+            });
+            return jsonResponse(200, {
+                ok: false,
+                requestId,
+                mode,
+                stage,
+                modelUsed: PRIMARY_MODEL,
+                openaiStatus: openaiOnlyFailure.status,
+                sample: { errorBody: openaiOnlyFailure.body }
+            });
         }
 
         // 1) 원문은 모델 분석 전에 즉시 저장(실패해도 raw는 남김)
@@ -519,145 +658,182 @@ Deno.serve(async (req) => {
                 requestId
             }
         });
+        stage = 'doc_upserted';
+        logStageTiming(requestId, stage, { documentId });
+        await writeIngestStageLog({ documentId, stage, status: 'success', payload: { requestId } });
 
+        stage = 'openai_request_start';
+        logStageTiming(requestId, stage, { model: PRIMARY_MODEL });
         const first = await callOpenAI(PRIMARY_MODEL, input, sourceType, documentId, contextDocs);
-        if (!first.ok) {
-            await upsertDocument({
-                id: documentId,
-                ownerUserId,
-                workspaceId,
-                sourceType,
-                title: '분석 실패',
-                rawText: input,
-                summaryText: '',
-                metadata: {
-                    ingestStatus: 'failed',
-                    requestId,
-                    upstreamFailed: true
-                }
-            });
-            return jsonResponse(502, {
-                error: {
-                    code: 'UPSTREAM_FAILED',
-                    message: 'analyze model failed',
-                    requestId
-                }
-            });
+        stage = 'openai_request_done';
+        if (first.ok) {
+            logStageTiming(requestId, stage, { model: PRIMARY_MODEL, ok: true, status: 200 });
+        } else {
+            const firstFailure = first as OpenAiFailure;
+            logStageTiming(requestId, stage, { model: PRIMARY_MODEL, ok: false, status: firstFailure.status });
+        }
+
+        let resolved = first;
+        let modelUsed: ModelName = PRIMARY_MODEL;
+        let fallbackUsed = false;
+
+        if (!resolved.ok && FALLBACK_MODEL !== PRIMARY_MODEL) {
+            logStageTiming(requestId, 'openai_request_start', { model: FALLBACK_MODEL, retry: true });
+            const second = await callOpenAI(FALLBACK_MODEL, input, sourceType, documentId, contextDocs);
+            if (second.ok) {
+                logStageTiming(requestId, 'openai_request_done', { model: FALLBACK_MODEL, retry: true, ok: true, status: 200 });
+            } else {
+                const secondFailure = second as OpenAiFailure;
+                logStageTiming(requestId, 'openai_request_done', { model: FALLBACK_MODEL, retry: true, ok: false, status: secondFailure.status });
+            }
+            if (second.ok) {
+                resolved = second;
+                modelUsed = FALLBACK_MODEL;
+                fallbackUsed = true;
+            }
+        }
+
+        if (isOpenAiFailure(resolved)) {
+            throw new Error(`OPENAI_REQUEST_FAILED status=${resolved.status} body=${JSON.stringify(resolved.body).slice(0, 1200)}`);
         }
 
         const meta = buildMeta(startedAt, {
             requestId,
-            modelUsed: PRIMARY_MODEL,
-            fallbackUsed: false,
-            confidence: first.confidence,
-            ambiguity: first.ambiguity
+            modelUsed,
+            fallbackUsed,
+            confidence: resolved.confidence,
+            ambiguity: resolved.ambiguity
         });
         console.log(JSON.stringify({
             event: 'analyze_response',
             ...meta,
-            relationSignalCount: first.content.relationSignals?.length || 0,
-            autoSuggestionCount: first.content.autoLinkSuggestions?.length || 0
+            relationSignalCount: resolved.content.relationSignals?.length || 0,
+            autoSuggestionCount: resolved.content.autoLinkSuggestions?.length || 0
         }));
+
         await upsertDocument({
             id: documentId,
             ownerUserId,
             workspaceId,
             sourceType,
-            title: first.content.title,
+            title: resolved.content.title,
             rawText: input,
-            summaryText: first.content.summaryText,
+            summaryText: resolved.content.summaryText,
             metadata: {
                 ingestStatus: 'completed',
-                analysis: first.content,
+                analysis: resolved.content,
                 aiMeta: {
-                    modelUsed: PRIMARY_MODEL,
-                    fallbackUsed: false,
-                    confidence: first.confidence,
-                    ambiguity: first.ambiguity
+                    modelUsed,
+                    fallbackUsed,
+                    confidence: resolved.confidence,
+                    ambiguity: resolved.ambiguity
                 }
             }
         });
 
         await writeIngestStageLog({
             documentId,
-            stage: 'persist_chunks_start',
+            stage: 'chunks_persist_start',
             status: 'started',
-            payload: { modelUsed: PRIMARY_MODEL }
+            payload: { modelUsed }
         });
+        stage = 'chunks_persist_start';
+        logStageTiming(requestId, stage, { documentId, modelUsed });
 
         try {
-            await persistRagChunks({ ownerUserId, workspaceId, documentId, sourceType, data: first.content });
+            await persistRagChunks({ ownerUserId, workspaceId, documentId, sourceType, data: resolved.content });
         } catch (persistErr) {
             const errorMessage = persistErr instanceof Error ? persistErr.message : 'persist_rag_chunks_failed';
+            const supabaseError = (persistErr as any)?.supabaseError;
+            const hint = (persistErr as any)?.hint;
+            stage = 'failed';
 
             await writeIngestStageLog({
                 documentId,
-                stage: 'persist_chunks_failed',
+                stage,
                 status: 'failed',
                 message: errorMessage,
-                payload: { modelUsed: PRIMARY_MODEL }
+                payload: { modelUsed, supabaseError }
             });
+            logStageTiming(requestId, stage, { errorMessage });
 
             await upsertDocument({
                 id: documentId,
                 ownerUserId,
                 workspaceId,
                 sourceType,
-                title: first.content.title || '분석 실패',
+                title: resolved.content.title || '분석 실패',
                 rawText: input,
-                summaryText: first.content.summaryText || '',
+                summaryText: resolved.content.summaryText || '',
                 metadata: {
                     ingestStatus: 'failed',
-                    analysis: first.content,
+                    analysis: resolved.content,
                     aiMeta: {
-                        modelUsed: PRIMARY_MODEL,
-                        fallbackUsed: false,
-                        confidence: first.confidence,
-                        ambiguity: first.ambiguity,
+                        modelUsed,
+                        fallbackUsed,
+                        confidence: resolved.confidence,
+                        ambiguity: resolved.ambiguity,
                         retryReason: 'persist_failed'
                     },
                     errorCode: 'PERSIST_CHUNKS_FAILED',
-                    errorMessage
+                    errorMessage,
+                    supabaseError,
+                    hint
                 }
             });
 
             const metaWithError = {
                 ...meta,
-                fallbackUsed: false,
+                fallbackUsed,
                 retryReason: 'persist_failed',
                 errorCode: 'PERSIST_CHUNKS_FAILED',
-                errorMessage
+                errorMessage,
+                supabaseError,
+                hint
             };
 
             return jsonResponse(500, {
-                data: first.content,
-                meta: metaWithError,
-                error: {
-                    code: 'INTERNAL',
-                    message: errorMessage,
-                    requestId
-                }
+                ok: false,
+                requestId,
+                stage,
+                errorName: persistErr instanceof Error ? persistErr.name : 'PersistError',
+                errorMessage,
+                errorStack: trimStack((persistErr as Error)?.stack),
+                supabaseError,
+                hint,
+                data: resolved.content,
+                meta: metaWithError
             });
         }
 
         await writeIngestStageLog({
             documentId,
-            stage: 'persist_chunks_success',
+            stage: 'chunks_persist_done',
             status: 'success',
-            payload: { modelUsed: PRIMARY_MODEL }
+            payload: { modelUsed }
         });
+        stage = 'chunks_persist_done';
+        logStageTiming(requestId, stage, { documentId, modelUsed });
 
         return jsonResponse(200, {
-            data: first.content,
+            data: resolved.content,
             meta
         });
     } catch (e) {
+        stage = 'failed';
+        const errorMessage = e instanceof Error ? e.message : 'unknown error';
+        const supabaseError = (e as any)?.supabaseError;
+        const hint = (e as any)?.hint;
+        logStageTiming(requestId, stage, { errorMessage });
         return jsonResponse(500, {
-            error: {
-                code: 'INTERNAL',
-                message: e instanceof Error ? e.message : 'unknown error',
-                requestId
-            }
+            ok: false,
+            requestId,
+            stage,
+            errorName: e instanceof Error ? e.name : 'UnknownError',
+            errorMessage,
+            errorStack: trimStack((e as Error)?.stack),
+            supabaseError,
+            hint
         });
     }
 });
