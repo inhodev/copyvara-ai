@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Document, LinkCandidate, Edge, Node, DocumentStatus, LinkStatus, QASession, MemoryItem } from './types';
 import { MOCK_DOCS, MOCK_CANDIDATES, MOCK_EDGES, MOCK_NODES, MOCK_QA_SESSIONS } from './services/mockData';
-import { analyzeInputWithContext, detectSourceType, generateRAGAnswer } from './services/geminiService';
+import { analyzeInputWithContext, detectSourceType, fetchPersistedDocuments, generateRAGAnswer } from './services/geminiService';
 
 const IS_DEV = import.meta.env.DEV;
 
@@ -189,6 +189,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [questionHistory, setQuestionHistory] = useState<string[]>(() => safeLoad(sessionStorage, STORAGE_KEYS.questionHistory, []));
   const [lastError, setLastError] = useState<string | null>(null);
 
+  const hydrateDocumentsFromSupabase = async () => {
+    const persisted = await fetchPersistedDocuments(300);
+    setDocuments(persisted);
+    const rebuiltMemory = persisted.flatMap((doc) => buildMemoryItemsFromDoc(doc)).slice(0, 2000);
+    setMemoryItems(rebuiltMemory);
+  };
+
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      try {
+        const persisted = await fetchPersistedDocuments(300);
+        if (!active) return;
+        setDocuments(persisted);
+        const rebuiltMemory = persisted.flatMap((doc) => buildMemoryItemsFromDoc(doc)).slice(0, 2000);
+        setMemoryItems(rebuiltMemory);
+      } catch (e) {
+        if (!active) return;
+        const message = e instanceof Error ? e.message : 'Supabase 문서 로드 실패';
+        setLastError(message);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   useEffect(() => {
     const newNodes = documents.map(d => ({
       id: d.id,
@@ -322,6 +351,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         status: 'candidate'
       }));
       setEdges(prev => [...prev, ...newEdges]);
+
+      await hydrateDocumentsFromSupabase();
 
     } catch (e) {
       console.error(e);

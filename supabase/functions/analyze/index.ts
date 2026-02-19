@@ -253,6 +253,37 @@ const upsertChunk = async (params: {
     });
 };
 
+const upsertDocument = async (params: {
+    id: string;
+    ownerUserId: string;
+    workspaceId: string;
+    sourceType: SourceType;
+    title: string;
+    rawText: string;
+    summaryText: string;
+    metadata?: Record<string, unknown>;
+}) => {
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return;
+    await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_rag_document`, {
+        method: 'POST',
+        headers: {
+            apikey: SUPABASE_SERVICE_ROLE_KEY,
+            Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            p_id: params.id,
+            p_workspace_id: params.workspaceId,
+            p_owner_user_id: params.ownerUserId,
+            p_source_type: params.sourceType,
+            p_title: params.title,
+            p_raw_text: params.rawText,
+            p_summary_text: params.summaryText,
+            p_metadata: params.metadata || {}
+        })
+    });
+};
+
 const persistRagChunks = async (params: {
     ownerUserId: string;
     workspaceId: string;
@@ -443,6 +474,24 @@ Deno.serve(async (req) => {
             relationSignalCount: first.content.relationSignals?.length || 0,
             autoSuggestionCount: first.content.autoLinkSuggestions?.length || 0
         }));
+        await upsertDocument({
+            id: documentId,
+            ownerUserId,
+            workspaceId,
+            sourceType,
+            title: first.content.title,
+            rawText: input,
+            summaryText: first.content.summaryText,
+            metadata: {
+                analysis: first.content,
+                aiMeta: {
+                    modelUsed: PRIMARY_MODEL,
+                    fallbackUsed: false,
+                    confidence: first.confidence,
+                    ambiguity: first.ambiguity
+                }
+            }
+        });
         await persistRagChunks({ ownerUserId, workspaceId, documentId, sourceType, data: first.content });
         return jsonResponse(200, {
             data: first.content,
