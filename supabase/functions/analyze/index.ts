@@ -232,7 +232,7 @@ const upsertChunk = async (params: {
     metadata?: Record<string, unknown>;
 }) => {
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return;
-    await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_rag_chunk`, {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_rag_chunk`, {
         method: 'POST',
         headers: {
             apikey: SUPABASE_SERVICE_ROLE_KEY,
@@ -251,6 +251,12 @@ const upsertChunk = async (params: {
             p_metadata: params.metadata || {}
         })
     });
+
+    if (!res.ok) {
+        const body = await safeJson(res);
+        const message = body?.message || body?.error?.message || `upsert_rag_chunk failed: ${res.status}`;
+        throw new Error(message);
+    }
 };
 
 const upsertDocument = async (params: {
@@ -264,7 +270,7 @@ const upsertDocument = async (params: {
     metadata?: Record<string, unknown>;
 }) => {
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return;
-    await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_rag_document`, {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_rag_document`, {
         method: 'POST',
         headers: {
             apikey: SUPABASE_SERVICE_ROLE_KEY,
@@ -282,6 +288,12 @@ const upsertDocument = async (params: {
             p_metadata: params.metadata || {}
         })
     });
+
+    if (!res.ok) {
+        const body = await safeJson(res);
+        const message = body?.message || body?.error?.message || `upsert_rag_document failed: ${res.status}`;
+        throw new Error(message);
+    }
 };
 
 const persistRagChunks = async (params: {

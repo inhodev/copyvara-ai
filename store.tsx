@@ -353,11 +353,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setEdges(prev => [...prev, ...newEdges]);
 
       await hydrateDocumentsFromSupabase();
+      setLastError(null);
 
     } catch (e) {
       console.error(e);
       setLastError(e instanceof Error ? e.message : '문서 분석 실패');
-      setDocuments(prev => prev.map(d => d.id === newId ? { ...d, status: DocumentStatus.Failed, title: "분석 실패" } : d));
+      setDocuments(prev => prev.map(d => d.id === newId ? {
+        ...d,
+        status: DocumentStatus.Failed,
+        title: '분석 실패',
+        summaryText: e instanceof Error ? e.message : '문서 분석 실패'
+      } : d));
     }
   };
 
