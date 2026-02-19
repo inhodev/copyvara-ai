@@ -424,7 +424,7 @@ const callOpenAI = async (
                     name: 'analyze_result',
                     schema: {
                         type: 'object',
-                        additionalProperties: true,
+                        additionalProperties: false,
                         properties: {
                             title: { type: 'string' },
                             summaryText: { type: 'string' },
