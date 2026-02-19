@@ -71,11 +71,17 @@ const callEdgeFunction = async <T>(functionName: string, payload: unknown): Prom
     body: JSON.stringify(payload)
   });
 
-  const json = await res.json().catch(() => ({}));
+  const bodyText = await res.text();
+  let json: unknown = {};
+  try {
+    json = bodyText ? JSON.parse(bodyText) : {};
+  } catch {
+    json = {};
+  }
 
   if (!res.ok) {
-    const message = json?.error?.message || json?.message || `Edge Function 호출 실패: ${functionName}`;
-    throw new Error(message);
+    const textForError = bodyText || JSON.stringify(json || {});
+    throw new Error(`Edge ${functionName} failed (${res.status}): ${textForError}`);
   }
 
   return json as T;

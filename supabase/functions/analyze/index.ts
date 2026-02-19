@@ -314,10 +314,9 @@ const writeIngestStageLog = async (params: {
     stage:
     | 'received'
     | 'doc_upserted'
-    | 'openai_request_start'
-    | 'openai_request_done'
-    | 'chunks_persist_start'
-    | 'chunks_persist_done'
+    | 'openai_called'
+    | 'analysis_saved'
+    | 'chunks_persisted'
     | 'failed';
     status: 'started' | 'failed' | 'success';
     message?: string;
@@ -507,10 +506,9 @@ Deno.serve(async (req) => {
     let stage:
         | 'received'
         | 'doc_upserted'
-        | 'openai_request_start'
-        | 'openai_request_done'
-        | 'chunks_persist_start'
-        | 'chunks_persist_done'
+        | 'openai_called'
+        | 'analysis_saved'
+        | 'chunks_persisted'
         | 'failed'
         | 'init' = 'init';
 
@@ -600,10 +598,9 @@ Deno.serve(async (req) => {
         }
 
         if (mode === 'openai') {
-            stage = 'openai_request_start';
-            logStageTiming(requestId, stage, { mode, model: PRIMARY_MODEL });
+            logStageTiming(requestId, 'received', { mode, model: PRIMARY_MODEL });
             const openaiOnly = await callOpenAI(PRIMARY_MODEL, input || 'mode=openai', sourceType, documentId, contextDocs);
-            stage = 'openai_request_done';
+            stage = 'openai_called';
             if (openaiOnly.ok) {
                 logStageTiming(requestId, stage, {
                     mode,
@@ -662,10 +659,9 @@ Deno.serve(async (req) => {
         logStageTiming(requestId, stage, { documentId });
         await writeIngestStageLog({ documentId, stage, status: 'success', payload: { requestId } });
 
-        stage = 'openai_request_start';
-        logStageTiming(requestId, stage, { model: PRIMARY_MODEL });
+        logStageTiming(requestId, 'received', { model: PRIMARY_MODEL });
         const first = await callOpenAI(PRIMARY_MODEL, input, sourceType, documentId, contextDocs);
-        stage = 'openai_request_done';
+        stage = 'openai_called';
         if (first.ok) {
             logStageTiming(requestId, stage, { model: PRIMARY_MODEL, ok: true, status: 200 });
         } else {
@@ -678,13 +674,13 @@ Deno.serve(async (req) => {
         let fallbackUsed = false;
 
         if (!resolved.ok && FALLBACK_MODEL !== PRIMARY_MODEL) {
-            logStageTiming(requestId, 'openai_request_start', { model: FALLBACK_MODEL, retry: true });
+            logStageTiming(requestId, 'openai_called', { model: FALLBACK_MODEL, retry: true, phase: 'start' });
             const second = await callOpenAI(FALLBACK_MODEL, input, sourceType, documentId, contextDocs);
             if (second.ok) {
-                logStageTiming(requestId, 'openai_request_done', { model: FALLBACK_MODEL, retry: true, ok: true, status: 200 });
+                logStageTiming(requestId, 'openai_called', { model: FALLBACK_MODEL, retry: true, ok: true, status: 200 });
             } else {
                 const secondFailure = second as OpenAiFailure;
-                logStageTiming(requestId, 'openai_request_done', { model: FALLBACK_MODEL, retry: true, ok: false, status: secondFailure.status });
+                logStageTiming(requestId, 'openai_called', { model: FALLBACK_MODEL, retry: true, ok: false, status: secondFailure.status });
             }
             if (second.ok) {
                 resolved = second;
@@ -730,14 +726,8 @@ Deno.serve(async (req) => {
                 }
             }
         });
-
-        await writeIngestStageLog({
-            documentId,
-            stage: 'chunks_persist_start',
-            status: 'started',
-            payload: { modelUsed }
-        });
-        stage = 'chunks_persist_start';
+        stage = 'analysis_saved';
+        await writeIngestStageLog({ documentId, stage, status: 'success', payload: { requestId, modelUsed } });
         logStageTiming(requestId, stage, { documentId, modelUsed });
 
         try {
@@ -798,7 +788,7 @@ Deno.serve(async (req) => {
                 stage,
                 errorName: persistErr instanceof Error ? persistErr.name : 'PersistError',
                 errorMessage,
-                errorStack: trimStack((persistErr as Error)?.stack),
+                stack: trimStack((persistErr as Error)?.stack),
                 supabaseError,
                 hint,
                 data: resolved.content,
@@ -808,11 +798,11 @@ Deno.serve(async (req) => {
 
         await writeIngestStageLog({
             documentId,
-            stage: 'chunks_persist_done',
+            stage: 'chunks_persisted',
             status: 'success',
             payload: { modelUsed }
         });
-        stage = 'chunks_persist_done';
+        stage = 'chunks_persisted';
         logStageTiming(requestId, stage, { documentId, modelUsed });
 
         return jsonResponse(200, {
@@ -831,7 +821,7 @@ Deno.serve(async (req) => {
             stage,
             errorName: e instanceof Error ? e.name : 'UnknownError',
             errorMessage,
-            errorStack: trimStack((e as Error)?.stack),
+            stack: trimStack((e as Error)?.stack),
             supabaseError,
             hint
         });
