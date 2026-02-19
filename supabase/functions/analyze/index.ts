@@ -231,7 +231,9 @@ const upsertChunk = async (params: {
     embedding: number[];
     metadata?: Record<string, unknown>;
 }) => {
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return;
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+        throw new Error('SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing in Edge Function environment');
+    }
     const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_rag_chunk`, {
         method: 'POST',
         headers: {
@@ -269,7 +271,9 @@ const upsertDocument = async (params: {
     summaryText: string;
     metadata?: Record<string, unknown>;
 }) => {
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return;
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+        throw new Error('SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing in Edge Function environment');
+    }
     const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_rag_document`, {
         method: 'POST',
         headers: {
