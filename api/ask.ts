@@ -98,7 +98,7 @@ const askOpenAI = async (question: string, citations: Citation[]) => {
         .map((c, idx) => `${idx + 1}) [docId=${c.docId}] title=${c.title}\nquote=${c.quote}`)
         .join('\n\n') || '관련 문서 없음';
 
-    const model = process.env.OPENAI_MODEL_PRIMARY || 'gpt-4o-mini';
+    const model = 'gpt-5-mini';
     const prompt = buildPrompt(question, contextLines);
 
     const res = await fetch('https://api.openai.com/v1/responses', {

@@ -58,7 +58,7 @@ const summarizeWithOpenAI = async (rawText: string, title?: string): Promise<Ing
         throw new Error('OPENAI_API_KEY is missing');
     }
 
-    const model = process.env.OPENAI_MODEL_PRIMARY || 'gpt-4o-mini';
+    const model = 'gpt-5-mini';
     const prompt = buildSummaryPrompt(rawText, title);
 
     const res = await fetch('https://api.openai.com/v1/responses', {
@@ -183,7 +183,7 @@ const writeDocument = async (payload: {
                 }
             },
             aiMeta: {
-                modelUsed: process.env.OPENAI_MODEL_PRIMARY || 'gpt-4o-mini',
+                modelUsed: 'gpt-5-mini',
                 fallbackUsed: false,
                 confidence: payload.analysis ? 0.72 : 0,
                 ambiguity: !payload.analysis,
