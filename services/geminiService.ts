@@ -41,32 +41,11 @@ const SUPABASE_URL = RAW_SUPABASE_URL
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 let hasLoggedSupabaseEnv = false;
 
-const ensureConfig = () => {
-  if (!hasLoggedSupabaseEnv) {
-    console.log('[Supabase Debug] VITE_SUPABASE_URL =', SUPABASE_URL);
-    console.log('[Supabase Debug] VITE_SUPABASE_ANON_KEY exists =', Boolean(SUPABASE_ANON_KEY));
-    hasLoggedSupabaseEnv = true;
-  }
-
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    throw new Error('Supabase 환경변수(VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY)가 설정되지 않았습니다.');
-  }
-
-  if (!/^https:\/\//i.test(SUPABASE_URL)) {
-    throw new Error(`VITE_SUPABASE_URL 형식 오류: ${SUPABASE_URL}`);
-  }
-};
-
-const callEdgeFunction = async <T>(functionName: string, payload: unknown): Promise<T> => {
-  ensureConfig();
-
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/${functionName}`, {
+const callServerApi = async <T>(path: string, payload: unknown): Promise<T> => {
+  const res = await fetch(path, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      apikey: SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-      'X-Client-Version': 'copyvara-web-v0.3'
+      'Content-Type': 'application/json'
     },
     body: JSON.stringify(payload)
   });
@@ -81,10 +60,26 @@ const callEdgeFunction = async <T>(functionName: string, payload: unknown): Prom
 
   if (!res.ok) {
     const textForError = bodyText || JSON.stringify(json || {});
-    throw new Error(`Edge ${functionName} failed (${res.status}): ${textForError}`);
+    throw new Error(`API ${path} failed (${res.status}): ${textForError}`);
   }
 
   return json as T;
+};
+
+const ensureConfig = () => {
+  if (!hasLoggedSupabaseEnv) {
+    console.log('[Supabase Debug] VITE_SUPABASE_URL =', SUPABASE_URL);
+    console.log('[Supabase Debug] VITE_SUPABASE_ANON_KEY exists =', Boolean(SUPABASE_ANON_KEY));
+    hasLoggedSupabaseEnv = true;
+  }
+
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    throw new Error('Supabase 환경변수(VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY)가 설정되지 않았습니다.');
+  }
+
+  if (!/^https:\/\//i.test(SUPABASE_URL)) {
+    throw new Error(`VITE_SUPABASE_URL 형식 오류: ${SUPABASE_URL}`);
+  }
 };
 
 const callSupabaseRest = async <T>(pathWithQuery: string): Promise<T> => {
@@ -174,24 +169,31 @@ export const detectSourceType = (input: string): SourceType => {
 };
 
 export const analyzeInput = async (text: string, sourceType: SourceType): Promise<AnalyzeData> => {
-  const response = await callEdgeFunction<ApiEnvelope<AnalyzeData> | AnalyzeData>('analyze', {
-    input: text,
-    sourceType,
-    options: {
-      language: 'ko',
-      strictSchema: true
-    }
+  const response = await callServerApi<{
+    id: string;
+    title: string;
+    rawText: string;
+    summaryText?: string;
+    sourceType?: string;
+  }>('/api/ingest', {
+    raw_text: text,
+    source_type: sourceType,
+    workspace_id: 'w1'
   });
 
-  if ((response as ApiEnvelope<AnalyzeData>).data) {
-    const envelope = response as ApiEnvelope<AnalyzeData>;
-    return {
-      ...(envelope.data as AnalyzeData),
-      aiMeta: envelope.meta
-    };
-  }
-
-  return response as AnalyzeData;
+  return {
+    id: response.id,
+    title: response.title,
+    rawText: response.rawText || text,
+    summaryText: response.summaryText || '',
+    sourceType: (response.sourceType as Document['sourceType']) || sourceType,
+    docType: 'text',
+    knowledgeScore: 50,
+    topicTags: [],
+    summaryBullets: [],
+    relationSignals: [],
+    autoLinkSuggestions: []
+  };
 };
 
 export const analyzeInputWithContext = async (
@@ -199,50 +201,49 @@ export const analyzeInputWithContext = async (
   sourceType: SourceType,
   params: { documentId: string; userId?: string; contextDocs: AnalyzeContextDoc[] }
 ): Promise<AnalyzeData> => {
-  const response = await callEdgeFunction<ApiEnvelope<AnalyzeData> | AnalyzeData>('analyze', {
-    input: text,
-    sourceType,
-    documentId: params.documentId,
-    userId: params.userId,
-    contextDocs: params.contextDocs,
-    options: {
-      language: 'ko',
-      strictSchema: true
-    }
+  const response = await callServerApi<{
+    id: string;
+    title: string;
+    rawText: string;
+    summaryText?: string;
+    sourceType?: string;
+  }>('/api/ingest', {
+    title: params.contextDocs[0]?.title,
+    raw_text: text,
+    source_type: sourceType,
+    workspace_id: 'w1'
   });
 
-  if ((response as ApiEnvelope<AnalyzeData>).data) {
-    const envelope = response as ApiEnvelope<AnalyzeData>;
-    return {
-      ...(envelope.data as AnalyzeData),
-      aiMeta: envelope.meta
-    };
-  }
-
-  return response as AnalyzeData;
+  return {
+    id: response.id || params.documentId,
+    title: response.title,
+    rawText: response.rawText || text,
+    summaryText: response.summaryText || '',
+    sourceType: (response.sourceType as Document['sourceType']) || sourceType,
+    docType: 'text',
+    knowledgeScore: 50,
+    topicTags: [],
+    summaryBullets: [],
+    relationSignals: [],
+    autoLinkSuggestions: []
+  };
 };
 
 export const generateRAGAnswer = async (question: string, contextDocs: Document[], userId?: string) => {
-  const response = await callEdgeFunction<ApiEnvelope<{ answer: string; evidence?: Array<{ id: string; title: string; snippet: string; segmentId?: string }>; citations?: Array<{ id: string; title: string; quote: string }> }> | { answer: string; evidence?: Array<{ id: string; title: string; snippet: string; segmentId?: string }>; citations?: Array<{ id: string; title: string; quote: string }> }>('qa', {
+  const response = await callServerApi<{
+    answer: string;
+    evidence?: Array<{ id: string; title: string; snippet: string; segmentId?: string }>;
+    citations?: Array<{ title: string; quote: string; docId: string }>;
+  }>('/api/ask', {
     question,
     userId,
-    contextDocs,
-    options: {
-      language: 'ko',
-      maxEvidence: 5
-    }
+    contextDocs
   });
 
-  const payload = (response as ApiEnvelope<{ answer: string; evidence?: Array<{ id: string; title: string; snippet: string; segmentId?: string }>; citations?: Array<{ id: string; title: string; quote: string }> }>).data
-    ? (response as ApiEnvelope<{ answer: string; evidence?: Array<{ id: string; title: string; snippet: string; segmentId?: string }>; citations?: Array<{ id: string; title: string; quote: string }> }>).data
-    : (response as { answer: string; evidence?: Array<{ id: string; title: string; snippet: string; segmentId?: string }>; citations?: Array<{ id: string; title: string; quote: string }> });
-
-  const meta = (response as ApiEnvelope<{ answer: string; evidence?: Array<{ id: string; title: string; snippet: string; segmentId?: string }>; citations?: Array<{ id: string; title: string; quote: string }> }>).meta;
-
   return {
-    answer: payload.answer,
-    evidence: payload.evidence || [],
-    citations: payload.citations || [],
-    meta
+    answer: response.answer,
+    evidence: response.evidence || [],
+    citations: response.citations || [],
+    meta: undefined
   };
 };
