@@ -300,6 +300,45 @@ const upsertDocument = async (params: {
     }
 };
 
+const writeIngestStageLog = async (params: {
+    documentId: string;
+    stage: 'persist_chunks_start' | 'persist_chunks_failed' | 'persist_chunks_success';
+    status: 'started' | 'failed' | 'success';
+    message?: string;
+    payload?: Record<string, unknown>;
+}) => {
+    console.log(JSON.stringify({
+        event: params.stage,
+        documentId: params.documentId,
+        status: params.status,
+        message: params.message || null,
+        payload: params.payload || {}
+    }));
+
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return;
+
+    try {
+        await fetch(`${SUPABASE_URL}/rest/v1/rag_ingest_events`, {
+            method: 'POST',
+            headers: {
+                apikey: SUPABASE_SERVICE_ROLE_KEY,
+                Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+                'Content-Type': 'application/json',
+                Prefer: 'return=minimal'
+            },
+            body: JSON.stringify({
+                document_id: params.documentId,
+                stage: params.stage,
+                status: params.status,
+                message: params.message || null,
+                payload: params.payload || {}
+            })
+        });
+    } catch {
+        // stage 로그 실패는 주 흐름을 막지 않음
+    }
+};
+
 const persistRagChunks = async (params: {
     ownerUserId: string;
     workspaceId: string;
@@ -538,7 +577,76 @@ Deno.serve(async (req) => {
                 }
             }
         });
-        await persistRagChunks({ ownerUserId, workspaceId, documentId, sourceType, data: first.content });
+
+        await writeIngestStageLog({
+            documentId,
+            stage: 'persist_chunks_start',
+            status: 'started',
+            payload: { modelUsed: PRIMARY_MODEL }
+        });
+
+        try {
+            await persistRagChunks({ ownerUserId, workspaceId, documentId, sourceType, data: first.content });
+        } catch (persistErr) {
+            const errorMessage = persistErr instanceof Error ? persistErr.message : 'persist_rag_chunks_failed';
+
+            await writeIngestStageLog({
+                documentId,
+                stage: 'persist_chunks_failed',
+                status: 'failed',
+                message: errorMessage,
+                payload: { modelUsed: PRIMARY_MODEL }
+            });
+
+            await upsertDocument({
+                id: documentId,
+                ownerUserId,
+                workspaceId,
+                sourceType,
+                title: first.content.title || '분석 실패',
+                rawText: input,
+                summaryText: first.content.summaryText || '',
+                metadata: {
+                    ingestStatus: 'failed',
+                    analysis: first.content,
+                    aiMeta: {
+                        modelUsed: PRIMARY_MODEL,
+                        fallbackUsed: false,
+                        confidence: first.confidence,
+                        ambiguity: first.ambiguity,
+                        retryReason: 'persist_failed'
+                    },
+                    errorCode: 'PERSIST_CHUNKS_FAILED',
+                    errorMessage
+                }
+            });
+
+            const metaWithError = {
+                ...meta,
+                fallbackUsed: false,
+                retryReason: 'persist_failed',
+                errorCode: 'PERSIST_CHUNKS_FAILED',
+                errorMessage
+            };
+
+            return jsonResponse(500, {
+                data: first.content,
+                meta: metaWithError,
+                error: {
+                    code: 'INTERNAL',
+                    message: errorMessage,
+                    requestId
+                }
+            });
+        }
+
+        await writeIngestStageLog({
+            documentId,
+            stage: 'persist_chunks_success',
+            status: 'success',
+            payload: { modelUsed: PRIMARY_MODEL }
+        });
+
         return jsonResponse(200, {
             data: first.content,
             meta

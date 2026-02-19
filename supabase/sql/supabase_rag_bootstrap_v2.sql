@@ -60,6 +60,9 @@ create index if not exists rag_chunks_embedding_ivfflat
   using ivfflat (embedding vector_cosine_ops)
   with (lists = 100);
 
+-- 2-1) RLS 점검/해제 (service_role 경로 안정화)
+alter table public.rag_chunks disable row level security;
+
 -- 3) ingest 로그 테이블 (추가)
 create table if not exists public.rag_ingest_events (
   id bigserial primary key,
@@ -303,4 +306,3 @@ select id, document_id, title, left(content, 120) as snippet, created_at
 from public.rag_chunks
 order by created_at desc
 limit 10;
-
