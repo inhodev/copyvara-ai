@@ -462,8 +462,37 @@ Deno.serve(async (req) => {
             return jsonResponse(400, { error: { code: 'BAD_REQUEST', message: 'input is required', requestId } });
         }
 
+        // 1) 원문은 모델 분석 전에 즉시 저장(실패해도 raw는 남김)
+        await upsertDocument({
+            id: documentId,
+            ownerUserId,
+            workspaceId,
+            sourceType,
+            title: '분석 대기 중',
+            rawText: input,
+            summaryText: '',
+            metadata: {
+                ingestStatus: 'processing',
+                requestId
+            }
+        });
+
         const first = await callOpenAI(PRIMARY_MODEL, input, sourceType, documentId, contextDocs);
         if (!first.ok) {
+            await upsertDocument({
+                id: documentId,
+                ownerUserId,
+                workspaceId,
+                sourceType,
+                title: '분석 실패',
+                rawText: input,
+                summaryText: '',
+                metadata: {
+                    ingestStatus: 'failed',
+                    requestId,
+                    upstreamFailed: true
+                }
+            });
             return jsonResponse(502, {
                 error: {
                     code: 'UPSTREAM_FAILED',
@@ -495,6 +524,7 @@ Deno.serve(async (req) => {
             rawText: input,
             summaryText: first.content.summaryText,
             metadata: {
+                ingestStatus: 'completed',
                 analysis: first.content,
                 aiMeta: {
                     modelUsed: PRIMARY_MODEL,

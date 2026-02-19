@@ -189,9 +189,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [questionHistory, setQuestionHistory] = useState<string[]>(() => safeLoad(sessionStorage, STORAGE_KEYS.questionHistory, []));
   const [lastError, setLastError] = useState<string | null>(null);
 
+  const mergeWithLocalTransient = (persisted: Document[], current: Document[]) => {
+    const transient = current.filter((d) => d.status !== DocumentStatus.Done);
+    const map = new Map<string, Document>();
+    [...transient, ...persisted].forEach((doc) => map.set(doc.id, doc));
+    return Array.from(map.values()).sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
+  };
+
   const hydrateDocumentsFromSupabase = async () => {
     const persisted = await fetchPersistedDocuments(300);
-    setDocuments(persisted);
+    setDocuments((prev) => mergeWithLocalTransient(persisted, prev));
     const rebuiltMemory = persisted.flatMap((doc) => buildMemoryItemsFromDoc(doc)).slice(0, 2000);
     setMemoryItems(rebuiltMemory);
   };
@@ -203,7 +210,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         const persisted = await fetchPersistedDocuments(300);
         if (!active) return;
-        setDocuments(persisted);
+        setDocuments((prev) => mergeWithLocalTransient(persisted, prev));
         const rebuiltMemory = persisted.flatMap((doc) => buildMemoryItemsFromDoc(doc)).slice(0, 2000);
         setMemoryItems(rebuiltMemory);
       } catch (e) {
