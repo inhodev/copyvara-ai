@@ -21,12 +21,27 @@ interface AnalyzeData extends Partial<Document> {
   autoLinkSuggestions?: AutoLinkSuggestion[];
 }
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL?.replace(/\/$/, '');
+const RAW_SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_URL = RAW_SUPABASE_URL
+  ?.trim()
+  .replace(/^https?:\/\/https?:\/\//i, 'https://')
+  .replace(/\/$/, '');
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+let hasLoggedSupabaseEnv = false;
 
 const ensureConfig = () => {
+  if (!hasLoggedSupabaseEnv) {
+    console.log('[Supabase Debug] VITE_SUPABASE_URL =', SUPABASE_URL);
+    console.log('[Supabase Debug] VITE_SUPABASE_ANON_KEY exists =', Boolean(SUPABASE_ANON_KEY));
+    hasLoggedSupabaseEnv = true;
+  }
+
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     throw new Error('Supabase 환경변수(VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY)가 설정되지 않았습니다.');
+  }
+
+  if (!/^https:\/\//i.test(SUPABASE_URL)) {
+    throw new Error(`VITE_SUPABASE_URL 형식 오류: ${SUPABASE_URL}`);
   }
 };
 
