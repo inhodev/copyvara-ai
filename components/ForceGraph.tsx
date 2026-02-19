@@ -23,7 +23,11 @@ export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, edges, onNodeClic
 
     // Deep copy to avoid mutating props used elsewhere
     const nodesData = nodes.map(d => ({ ...d }));
-    const linksData = edges.map(d => ({ ...d }));
+    const nodeIdSet = new Set(nodesData.map((n) => n.id));
+    // D3 forceLink는 존재하지 않는 노드 id가 있으면 즉시 throw 하므로 사전 필터링
+    const linksData = edges
+      .filter((e) => nodeIdSet.has(e.source) && nodeIdSet.has(e.target))
+      .map(d => ({ ...d }));
 
     const simulation = d3.forceSimulation(nodesData as any)
       .force("link", d3.forceLink(linksData).id((d: any) => d.id).distance(150)) // Increased distance for text space
@@ -46,14 +50,14 @@ export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, edges, onNodeClic
       .attr("markerHeight", 5)
       .attr("orient", "auto")
       .append("path")
-      .attr("fill", d => d === 'confirmed' ? '#003049' : '#C1121F') 
+      .attr("fill", d => d === 'confirmed' ? '#003049' : '#C1121F')
       .attr("d", "M0,-5L10,0L0,5");
 
     const link = svg.append("g")
       .selectAll("line")
       .data(linksData)
       .join("line")
-      .attr("stroke", d => d.status === 'confirmed' ? '#669BBC' : '#C1121F') 
+      .attr("stroke", d => d.status === 'confirmed' ? '#669BBC' : '#C1121F')
       .attr("stroke-opacity", d => d.status === 'confirmed' ? 0.6 : 0.4)
       .attr("stroke-width", d => d.status === 'confirmed' ? 2 : 1.5)
       .attr("stroke-dasharray", d => d.status === 'candidate' ? "4,4" : null)
@@ -133,7 +137,7 @@ export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, edges, onNodeClic
       .on("zoom", (event) => {
         svg.selectAll("g").attr("transform", event.transform);
       });
-    
+
     svg.call(zoom);
 
     return () => {
